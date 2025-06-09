@@ -20,85 +20,84 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: true
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        persist-credentials: true
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: '16'
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '16'
 
-      - name: Install conversion tools
-        run: |
-          npm install --global fbx2gltf
-          npm install --global @gltf-transform/cli @gltf-transform/extensions
+    - name: Install conversion tools
+      run: |
+        npm install fbx2gltf --save-dev
+        npm install @gltf-transform/cli @gltf-transform/extensions --save-dev
 
-      - name: Convert FBX to GLB
-        run: |
-          mkdir -p temp_glb
-          for f in FBX/**/*.fbx; do
-            base=$(basename "$f" .fbx)
-            fbx2gltf -i "$f" -o "temp_glb/$base.glb"
-          done
+    - name: Convert FBX to GLB
+      run: |
+        mkdir -p temp_glb
+        for f in FBX/**/*.fbx; do
+          base=$(basename "$f" .fbx)
+          echo "Converting $f → temp_glb/$base.glb"
+          npx fbx2gltf -i "$f" -o "temp_glb/$base.glb"
+        done
 
-      - name: Create glb-to-vrm1 script
-        run: |
-          cat << 'EOF' > convert_glb_to_vrm1.js
-          #!/usr/bin/env node
-          import fs from 'fs';
-          import path from 'path';
-          import { NodeIO } from '@gltf-transform/core';
-          import { VRMC_vrm } from '@gltf-transform/extensions';
+    - name: Create glb-to-vrm1 script
+      run: |
+        cat << 'EOF' > convert_glb_to_vrm1.js
+        #!/usr/bin/env node
+        import fs from 'fs';
+        import path from 'path';
+        import { NodeIO } from '@gltf-transform/core';
+        import { VRMC_vrm } from '@gltf-transform/extensions';
 
-          async function main() {
-            const title  = process.env.INPUT_TITLE  || 'Untitled';
-            const author = process.env.INPUT_AUTHOR || 'Unknown';
-            const io = new NodeIO().registerExtensions([VRMC_vrm]);
-            const outDir = path.resolve('ExportedVRM1');
-            fs.mkdirSync(outDir, { recursive: true });
+        async function main() {
+          const title  = process.env.INPUT_TITLE  || 'Untitled';
+          const author = process.env.INPUT_AUTHOR || 'Unknown';
+          const io = new NodeIO().registerExtensions([VRMC_vrm]);
+          const outDir = path.resolve('ExportedVRM1');
+          fs.mkdirSync(outDir, { recursive: true });
 
-            const files = fs.readdirSync('temp_glb').filter(f => f.endsWith('.glb'));
-            for (const file of files) {
-              const inPath = path.join('temp_glb', file);
-              const doc    = io.read(inPath);
-
-              // メタデータ埋め込み
-              const vrmExt = doc.createExtension(VRMC_vrm);
-              const meta   = vrmExt.createMetadata();
-              meta.setTitle(title);
-              meta.setAuthor(author);
-
-              const outPath = path.join(outDir, file.replace(/\.glb$/, '.vrm'));
-              io.write(outPath, doc);
-              console.log(`Exported VRM1.x → ${outPath}`);
-            }
+          const files = fs.readdirSync('temp_glb').filter(f => f.endsWith('.glb'));
+          for (const file of files) {
+            const inPath = path.join('temp_glb', file);
+            const doc    = io.read(inPath);
+            const vrmExt = doc.createExtension(VRMC_vrm);
+            const meta   = vrmExt.createMetadata();
+            meta.setTitle(title);
+            meta.setAuthor(author);
+            const outPath = path.join(outDir, file.replace(/\.glb$/, '.vrm'));
+            io.write(outPath, doc);
+            console.log(`Exported VRM1.x → ${outPath}`);
           }
+        }
 
-          main().catch(err => {
-            console.error(err);
-            process.exit(1);
-          });
-          EOF
-          chmod +x convert_glb_to_vrm1.js
+        main().catch(err => {
+          console.error(err);
+          process.exit(1);
+        });
+        EOF
+        chmod +x convert_glb_to_vrm1.js
 
-      - name: Run glb-to-vrm1 conversion
-        env:
-          INPUT_TITLE:  ${{ github.event.inputs.title }}
-          INPUT_AUTHOR: ${{ github.event.inputs.author }}
-        run: |
-          mkdir -p ExportedVRM1
-          node convert_glb_to_vrm1.js
+    - name: Run glb-to-vrm1 conversion
+      env:
+        INPUT_TITLE:  ${{ github.event.inputs.title }}
+        INPUT_AUTHOR: ${{ github.event.inputs.author }}
+      run: |
+        mkdir -p ExportedVRM1
+        npx gltf-transform copy temp_glb -o ExportedVRM1  # ensure dirs exist
+        node convert_glb_to_vrm1.js
 
-      - name: Commit & Push VRM files
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add ExportedVRM1/
-          if git diff --cached --quiet; then
-            echo "✅ No new VRM1.x files"
-          else
-            git commit -m "Auto-convert FBX → VRM1.x (Title: '${{ github.event.inputs.title }}', Author: '${{ github.event.inputs.author }}')"
-            git push
-          fi
+    - name: Commit & Push
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git add ExportedVRM1/
+        if git diff --cached --quiet; then
+          echo "✅ No new VRM1.x files"
+        else
+          git commit -m "Auto‑convert FBX → VRM1.x (Title: '${{ github.event.inputs.title }}', Author: '${{ github.event.inputs.author }}')"
+          git push
+        fi
