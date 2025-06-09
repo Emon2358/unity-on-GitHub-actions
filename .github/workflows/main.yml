@@ -15,64 +15,69 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # 1) リポジトリをチェックアウト
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           persist-credentials: true
 
+      # 2) Blender インストール
       - name: Install Blender
         run: |
           sudo apt-get update
           sudo apt-get install -y blender
 
-      - name: Clone VRM Add‑on
+      # 3) VRM Add‑on ZIP をダウンロード (最新リリース)
+      - name: Download VRM Add‑on ZIP
         run: |
-          git clone https://github.com/saturday06/VRM-Addon-for-Blender.git blender_addons
+          curl -fsSL \
+            -o VRM_Addon_for_Blender.zip \
+            https://github.com/saturday06/VRM-Addon-for-Blender/releases/latest/download/VRM_Addon_for_Blender.zip  \
+          || { echo "❌ Failed to download addon zip"; exit 1; }
 
-      - name: Install VRM Add‑on into Blender
-        run: |
-          # Blender ユーザーアドオンディレクトリにコピー
-          mkdir -p $HOME/.config/blender/4.0/scripts/addons
-          cp -r blender_addons/io_scene_vrm $HOME/.config/blender/4.0/scripts/addons/
-
+      # 4) 変換スクリプトを生成
       - name: Create conversion script
         run: |
           cat << 'EOF' > convert_fbx_to_vrm.py
           import bpy, os, sys
 
-          # アドオン有効化
+          # ZIP ファイルをインストール＆有効化  [oai_citation:0‡vrm-addon-for-blender.info](https://vrm-addon-for-blender.info/en/installation/?utm_source=chatgpt.com)
+          addon_zip = os.path.abspath("VRM_Addon_for_Blender.zip")
+          bpy.ops.preferences.addon_install(filepath=addon_zip, overwrite=True)
           bpy.ops.preferences.addon_enable(module="io_scene_vrm")
 
-          # 出力先
+          # 出力先ディレクトリを用意
           out_dir = os.path.abspath("ExportedVRM")
           os.makedirs(out_dir, exist_ok=True)
 
-          # リポジトリ内の .fbx を再帰的に検索
+          # リポジトリ直下から再帰検索で .fbx を処理
           cwd = os.getcwd()
           for root, dirs, files in os.walk(cwd):
               for fname in files:
                   if not fname.lower().endswith(".fbx"):
                       continue
                   fbxpath = os.path.join(root, fname)
-                  # 新規シーン
+                  print(f"Importing {fbxpath}...")
+                  # 空シーンにリセット
                   bpy.ops.wm.read_factory_settings(use_empty=True)
-                  # FBX インポート
                   try:
                       bpy.ops.import_scene.fbx(filepath=fbxpath)
                   except Exception as e:
-                      print(f"Failed to import {fbxpath}: {e}", file=sys.stderr)
+                      print(f"❌ Failed to import {fbxpath}: {e}", file=sys.stderr)
                       continue
-                  # VRM0.x エクスポート
+                  # .vrm へエクスポート
                   basename = os.path.splitext(fname)[0]
                   vrmpath = os.path.join(out_dir, basename + ".vrm")
                   bpy.ops.export_scene.vrm(filepath=vrmpath)
-                  print(f"Exported {vrmpath}")
+                  print(f"✅ Exported {vrmpath}")
           EOF
 
+      # 5) Blender をバッチモードで実行 → FBX→VRM0.x 変換
       - name: Run Blender conversion
         run: |
           blender --background --python convert_fbx_to_vrm.py
 
+      # 6) 生成された VRM ファイルをコミット＆プッシュ
       - name: Commit & Push VRM files
         run: |
           git config user.name "github-actions[bot]"
