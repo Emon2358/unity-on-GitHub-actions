@@ -30,10 +30,12 @@ jobs:
       with:
         node-version: '16'
 
-    - name: Install conversion tools globally
+    - name: Install conversion tools
       run: |
-        npm install -g fbx2gltf
-        npm install -g @gltf-transform/cli @gltf-transform/extensions
+        npm install fbx2gltf \
+                    @gltf-transform/core \
+                    @gltf-transform/cli \
+                    @gltf-transform/extensions
 
     - name: Convert FBX to GLB
       run: |
@@ -41,7 +43,7 @@ jobs:
         for f in FBX/**/*.fbx; do
           base=$(basename "$f" .fbx)
           echo "Converting $f → temp_glb/$base.glb"
-          fbx2gltf -i "$f" -o "temp_glb/$base.glb"
+          npx fbx2gltf -i "$f" -o "temp_glb/$base.glb"
         done
 
     - name: Create glb-to-vrm1 script
@@ -87,7 +89,9 @@ jobs:
         INPUT_AUTHOR: ${{ github.event.inputs.author }}
       run: |
         mkdir -p ExportedVRM1
-        gltf-transform copy temp_glb -o ExportedVRM1 --extension VRMC_vrm  # ensure directory exists
+        # まずはメタデータなしでディレクトリ構成だけコピー
+        npx gltf-transform copy temp_glb -o ExportedVRM1 --extension VRMC_vrm
+        # その後、本スクリプトでメタデータを埋め込んで書き出し
         node convert_glb_to_vrm1.js
 
     - name: Commit & Push
@@ -98,6 +102,6 @@ jobs:
         if git diff --cached --quiet; then
           echo "✅ No new VRM1.x files"
         else
-          git commit -m "Auto‑convert FBX → VRM1.x (Title: '${{ github.event.inputs.title }}', Author: '${{ github.event.inputs.author }}')"
+          git commit -m "Auto-convert FBX → VRM1.x (Title: '${{ github.event.inputs.title }}', Author: '${{ github.event.inputs.author }}')"
           git push
         fi
