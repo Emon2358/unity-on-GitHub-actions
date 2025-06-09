@@ -1,91 +1,104 @@
-name: Convert FBX to VRM0.x with Blender
+name: Convert FBX → VRM1.x with Metadata
 
 on:
-  push:
-    paths:
-      - '**/*.fbx'
-      - '.github/workflows/convert-fbx-to-vrm.yml'
   workflow_dispatch:
+    inputs:
+      title:
+        description: 'VRM のタイトル'
+        required: true
+        default: 'MyAvatar'
+      author:
+        description: 'VRM の作者'
+        required: true
+        default: 'GitHub Actions Bot'
 
 permissions:
   contents: write
 
 jobs:
-  fbx-to-vrm:
+  convert:
     runs-on: ubuntu-latest
 
     steps:
-      # 1) リポジトリをチェックアウト
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           persist-credentials: true
 
-      # 2) Blender インストール
-      - name: Install Blender
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '16'
+
+      - name: Install conversion tools
         run: |
-          sudo apt-get update
-          sudo apt-get install -y blender
+          npm install --global fbx2gltf
+          npm install --global @gltf-transform/cli @gltf-transform/extensions
 
-      # 3) VRM Add‑on ZIP をダウンロード (最新リリース)
-      - name: Download VRM Add‑on ZIP
+      - name: Convert FBX to GLB
         run: |
-          curl -fsSL \
-            -o VRM_Addon_for_Blender.zip \
-            https://github.com/saturday06/VRM-Addon-for-Blender/releases/latest/download/VRM_Addon_for_Blender.zip  \
-          || { echo "❌ Failed to download addon zip"; exit 1; }
+          mkdir -p temp_glb
+          for f in FBX/**/*.fbx; do
+            base=$(basename "$f" .fbx)
+            fbx2gltf -i "$f" -o "temp_glb/$base.glb"
+          done
 
-      # 4) 変換スクリプトを生成
-      - name: Create conversion script
+      - name: Create glb-to-vrm1 script
         run: |
-          cat << 'EOF' > convert_fbx_to_vrm.py
-          import bpy, os, sys
+          cat << 'EOF' > convert_glb_to_vrm1.js
+          #!/usr/bin/env node
+          import fs from 'fs';
+          import path from 'path';
+          import { NodeIO } from '@gltf-transform/core';
+          import { VRMC_vrm } from '@gltf-transform/extensions';
 
-          # ZIP ファイルをインストール＆有効化  [oai_citation:0‡vrm-addon-for-blender.info](https://vrm-addon-for-blender.info/en/installation/?utm_source=chatgpt.com)
-          addon_zip = os.path.abspath("VRM_Addon_for_Blender.zip")
-          bpy.ops.preferences.addon_install(filepath=addon_zip, overwrite=True)
-          bpy.ops.preferences.addon_enable(module="io_scene_vrm")
+          async function main() {
+            const title  = process.env.INPUT_TITLE  || 'Untitled';
+            const author = process.env.INPUT_AUTHOR || 'Unknown';
+            const io = new NodeIO().registerExtensions([VRMC_vrm]);
+            const outDir = path.resolve('ExportedVRM1');
+            fs.mkdirSync(outDir, { recursive: true });
 
-          # 出力先ディレクトリを用意
-          out_dir = os.path.abspath("ExportedVRM")
-          os.makedirs(out_dir, exist_ok=True)
+            const files = fs.readdirSync('temp_glb').filter(f => f.endsWith('.glb'));
+            for (const file of files) {
+              const inPath = path.join('temp_glb', file);
+              const doc    = io.read(inPath);
 
-          # リポジトリ直下から再帰検索で .fbx を処理
-          cwd = os.getcwd()
-          for root, dirs, files in os.walk(cwd):
-              for fname in files:
-                  if not fname.lower().endswith(".fbx"):
-                      continue
-                  fbxpath = os.path.join(root, fname)
-                  print(f"Importing {fbxpath}...")
-                  # 空シーンにリセット
-                  bpy.ops.wm.read_factory_settings(use_empty=True)
-                  try:
-                      bpy.ops.import_scene.fbx(filepath=fbxpath)
-                  except Exception as e:
-                      print(f"❌ Failed to import {fbxpath}: {e}", file=sys.stderr)
-                      continue
-                  # .vrm へエクスポート
-                  basename = os.path.splitext(fname)[0]
-                  vrmpath = os.path.join(out_dir, basename + ".vrm")
-                  bpy.ops.export_scene.vrm(filepath=vrmpath)
-                  print(f"✅ Exported {vrmpath}")
+              // メタデータ埋め込み
+              const vrmExt = doc.createExtension(VRMC_vrm);
+              const meta   = vrmExt.createMetadata();
+              meta.setTitle(title);
+              meta.setAuthor(author);
+
+              const outPath = path.join(outDir, file.replace(/\.glb$/, '.vrm'));
+              io.write(outPath, doc);
+              console.log(`Exported VRM1.x → ${outPath}`);
+            }
+          }
+
+          main().catch(err => {
+            console.error(err);
+            process.exit(1);
+          });
           EOF
+          chmod +x convert_glb_to_vrm1.js
 
-      # 5) Blender をバッチモードで実行 → FBX→VRM0.x 変換
-      - name: Run Blender conversion
+      - name: Run glb-to-vrm1 conversion
+        env:
+          INPUT_TITLE:  ${{ github.event.inputs.title }}
+          INPUT_AUTHOR: ${{ github.event.inputs.author }}
         run: |
-          blender --background --python convert_fbx_to_vrm.py
+          mkdir -p ExportedVRM1
+          node convert_glb_to_vrm1.js
 
-      # 6) 生成された VRM ファイルをコミット＆プッシュ
       - name: Commit & Push VRM files
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add ExportedVRM/
+          git add ExportedVRM1/
           if git diff --cached --quiet; then
-            echo "✅ No new VRM files"
+            echo "✅ No new VRM1.x files"
           else
-            git commit -m "Auto-convert FBX → VRM"
+            git commit -m "Auto-convert FBX → VRM1.x (Title: '${{ github.event.inputs.title }}', Author: '${{ github.event.inputs.author }}')"
             git push
           fi
