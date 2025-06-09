@@ -1,20 +1,18 @@
-name: Convert Prefabs to VRM0.x
+name: Convert FBX to VRM0.x with Blender
 
 on:
   push:
     paths:
-      - 'Assets/Prefabs/**.prefab'
-      - '.github/workflows/convert-prefabs.yml'
+      - 'FBX/**/*.fbx'
+      - '.github/workflows/convert-fbx-to-vrm.yml'
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  convert-and-commit:
+  fbx-to-vrm:
     runs-on: ubuntu-latest
-    env:
-      UNITY_VERSION: 2022.3.30f1
 
     steps:
       # 1) リポジトリをチェックアウト
@@ -23,89 +21,63 @@ jobs:
         with:
           persist-credentials: true
 
-      # 2) Unity エディタをセットアップ (Host 上にインストール)
-      - name: Setup Unity Editor
-        uses: game-ci/unity-setup@v2
-        with:
-          version: ${{ env.UNITY_VERSION }}
-          android: false         # Android モジュール不要なら false
-          ios: false
-
-      # 3) Unity ライセンスをアクティベート
-      - name: Activate Unity License
-        uses: game-ci/unity-activate@v2
-        with:
-          method: serial                   # シリアル認証方式
-          unitySerial: ${{ secrets.UNITY_SERIAL }}
-          unityEmail:  ${{ secrets.UNITY_EMAIL }}
-          unityPassword: ${{ secrets.UNITY_PASSWORD }}
-
-      # 4) UPM 依存関係として UniVRM0.x を manifest.json に追加
-      - name: Generate manifest.json for UniVRM0.x
+      # 2) Blender をインストール
+      - name: Install Blender
         run: |
-          mkdir -p Packages
-          cat << 'EOF' > Packages/manifest.json
-          {
-            "dependencies": {
-              "com.unity.render-pipelines.core": "12.1.8",
-              "com.vrmc.gltf": "https://github.com/vrm-c/UniVRM.git?path=/Assets/UniGLTF#v0.128.3",
-              "com.vrmc.univrm": "https://github.com/vrm-c/UniVRM.git?path=/Assets/VRM#v0.128.3"
-            }
-          }
+          sudo apt-get update
+          sudo apt-get install -y blender
+
+      # 3) VRM Add‑on for Blender を取得
+      - name: Clone VRM Add‑on
+        run: |
+          git clone https://github.com/saturday06/VRM-Addon-for-Blender.git blender_addons/VRM_Addon_for_Blender
+
+      # 4) 変換用スクリプトを生成
+      - name: Create conversion script
+        run: |
+          cat << 'EOF' > convert_fbx_to_vrm.py
+          import bpy, os
+
+          # アドオンをインストール＆有効化  [oai_citation:0‡github.com](https://github.com/saturday06/VRM-Addon-for-Blender?utm_source=chatgpt.com)
+          addon_path = os.path.abspath("blender_addons/VRM_Addon_for_Blender")
+          bpy.ops.preferences.addon_install(filepath=addon_path, overwrite=True)
+          bpy.ops.preferences.addon_enable(module="io_scene_vrm")
+
+          # 出力ディレクトリ準備
+          out_dir = os.path.abspath("ExportedVRM")
+          os.makedirs(out_dir, exist_ok=True)
+
+          # FBX をすべてインポート→VRMエクスポート
+          fbx_dir = os.path.abspath("FBX")
+          for fname in os.listdir(fbx_dir):
+              if not fname.lower().endswith(".fbx"):
+                  continue
+              fbxpath = os.path.join(fbx_dir, fname)
+              # 新規シーン
+              bpy.ops.wm.read_factory_settings(use_empty=True)
+              # FBXインポート
+              bpy.ops.import_scene.fbx(filepath=fbxpath)
+              # VRMエクスポート
+              basename = os.path.splitext(fname)[0]
+              vrmpath = os.path.join(out_dir, basename + ".vrm")
+              bpy.ops.export_scene.vrm(filepath=vrmpath)
           EOF
 
-      # 5) Prefab→VRM0.x 変換用 C# エディタスクリプトを動的に生成
-      - name: Create PrefabToVRM0Exporter script
+      # 5) Blender をバッチモードで実行 → FBX→VRM 変換
+      - name: Run Blender conversion
         run: |
-          mkdir -p Assets/Editor
-          cat << 'EOF' > Assets/Editor/PrefabToVRM0Exporter.cs
-          using UnityEngine;
-          using UnityEditor;
-          using VRM;  // VRM 0.x namespace
+          blender --background \
+                  --python convert_fbx_to_vrm.py
 
-          public static class PrefabToVRM0Exporter {
-              public static void ExportAllPrefabs() {
-                  var outDir = "ExportedVRM0";
-                  if (!System.IO.Directory.Exists(outDir)) {
-                      System.IO.Directory.CreateDirectory(outDir);
-                  }
-                  var guids = AssetDatabase.FindAssets("t:Prefab", new[]{"Assets/Prefabs"});
-                  foreach (var guid in guids) {
-                      var path = AssetDatabase.GUIDToAssetPath(guid);
-                      var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(path);
-                      var instance = PrefabUtility.InstantiatePrefab(prefab) as GameObject;
-                      var exporter = new VRM0Exporter();
-                      var bytes = exporter.Export(instance);
-                      var outPath = System.IO.Path.Combine(outDir, prefab.name + ".vrm");
-                      System.IO.File.WriteAllBytes(outPath, bytes);
-                      GameObject.DestroyImmediate(instance);
-                  }
-                  AssetDatabase.Refresh();
-              }
-          }
-          EOF
-
-      # 6) Unity をバッチモードで実行 → Prefab→VRM0.x 変換
-      - name: Export Prefabs to VRM0.x
-        run: |
-          # UNITY_PATH は unity-setup がセットする環境変数
-          "$UNITY_PATH" \
-            -batchmode \
-            -nographics \
-            -quit \
-            -projectPath . \
-            -executeMethod PrefabToVRM0Exporter.ExportAllPrefabs \
-            -logFile /dev/stdout
-
-      # 7) 生成 VRM をコミット＆プッシュ
-      - name: Commit & Push
+      # 6) 生成された VRM をコミット＆プッシュ
+      - name: Commit & Push VRM files
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add ExportedVRM0/
+          git add ExportedVRM/
           if git diff --cached --quiet; then
-            echo "✅ No new VRM0.x files to commit"
+            echo "✅ No new VRM files"
           else
-            git commit -m "Add/Update converted VRM0.x files"
+            git commit -m "Auto-convert FBX → VRM"
             git push
           fi
