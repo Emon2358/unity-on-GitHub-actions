@@ -30,12 +30,17 @@ jobs:
       with:
         node-version: '16'
 
-    - name: Install conversion tools
+    - name: Download FBX2glTF binary
       run: |
-        npm install fbx2gltf \
-                    @gltf-transform/core \
-                    @gltf-transform/cli \
-                    @gltf-transform/extensions
+        # v0.9.7 の Linux x64 バイナリを GitHub リリースから取得
+        wget -qO FBX2glTF \
+          https://github.com/facebookincubator/FBX2GLTF/releases/download/v0.9.7/FBX2glTF-linux-x64
+        chmod +x FBX2glTF
+      # リリース・バイナリの入手方法はコミュニティでも推奨されています :contentReference[oaicite:0]{index=0}
+
+    - name: Install glTF-Transform tools
+      run: |
+        npm install @gltf-transform/cli @gltf-transform/core @gltf-transform/extensions
 
     - name: Convert FBX to GLB
       run: |
@@ -43,8 +48,9 @@ jobs:
         for f in FBX/**/*.fbx; do
           base=$(basename "$f" .fbx)
           echo "Converting $f → temp_glb/$base.glb"
-          npx fbx2gltf -i "$f" -o "temp_glb/$base.glb"
+          ./FBX2glTF --binary --input "$f" --output "temp_glb/$base"
         done
+      # GitHub リリースのバイナリを直接実行することで、npm 経由で見つからない問題を解消します :contentReference[oaicite:1]{index=1}
 
     - name: Create glb-to-vrm1 script
       run: |
@@ -89,9 +95,9 @@ jobs:
         INPUT_AUTHOR: ${{ github.event.inputs.author }}
       run: |
         mkdir -p ExportedVRM1
-        # まずはメタデータなしでディレクトリ構成だけコピー
+        # 型変換だけ行いディレクトリ構成を作る
         npx gltf-transform copy temp_glb -o ExportedVRM1 --extension VRMC_vrm
-        # その後、本スクリプトでメタデータを埋め込んで書き出し
+        # 本スクリプトでメタデータ埋め込み＆書き出し
         node convert_glb_to_vrm1.js
 
     - name: Commit & Push
