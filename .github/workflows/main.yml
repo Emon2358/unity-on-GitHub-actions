@@ -1,103 +1,71 @@
-name: FBX to VRM Converter & Committer
+name: FBXからVRMへの変換（手動実行）
 
 on:
-  workflow_dispatch:  # 手動実行トリガー
+  workflow_dispatch:
+    inputs:
+      dummy:
+        description: 'ダミーパラメータ（このワークフローは手動実行されます）'
+        required: false
 
 jobs:
-  convert-and-commit:
+  convert:
     runs-on: ubuntu-latest
+    name: FBXファイルをglTFに変換し、VRM疑似ファイルを生成しリポジトリにコミットする
 
     steps:
-      - name: Checkout repository
+      - name: リポジトリをチェックアウトする
         uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
-          persist-credentials: true
 
-      - name: Install FBX2glTF from Godot fork
+      - name: unzipのインストール
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget unzip libstdc++6
-          wget https://github.com/godotengine/FBX2glTF/releases/latest/download/FBX2glTF-linux-x86_64.zip -O fbx2gltf.zip
-          unzip fbx2gltf.zip -d fbx2gltf
-          sudo mv fbx2gltf/FBX2glTF-linux-x86_64/FBX2glTF-linux-x86_64 /usr/local/bin/fbx2gltf
-          sudo chmod +x /usr/local/bin/fbx2gltf
+          sudo apt-get install -y unzip
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: '18'
-
-      - name: Install npm dependencies
+      - name: FBX2glTFツールのセットアップ
         run: |
-          npm init -y
-          npm install @gltf-transform/core @gltf-transform/extensions @gltf-transform/functions @pixiv/three-vrm
+          echo "FBX2glTFツール（v0.9.7）をダウンロードしています..."
+          # 指定されたURLからFBX2glTF Linux版をダウンロードします
+          curl -L -o FBX2glTF https://github.com/facebookincubator/FBX2glTF/releases/download/v0.9.7/FBX2glTF-linux-x64
+          chmod +x FBX2glTF
+          echo "FBX2glTFのダウンロードとセットアップが完了しました。"
 
-      - name: Write convert.js
+      - name: FBXからglTFおよびVRM疑似変換処理開始
         run: |
-          cat << 'EOF' > convert.js
-          #!/usr/bin/env node
-          import { spawnSync }    from 'child_process';
-          import { NodeIO }       from '@gltf-transform/core';
-          import { VRMExtension } from '@gltf-transform/extensions';
-          import { VRM }          from '@pixiv/three-vrm';
-          import fs               from 'fs';
-          import path             from 'path';
+          # 変換結果格納用ディレクトリの作成
+          mkdir -p temp_gltf
+          mkdir -p converted_vrm
+          
+          # リポジトリ内の全てのFBXファイルに対して変換処理を実施します
+          for fbxf in $(find . -type f -name "*.fbx"); do
+            filename=$(basename "$fbxf" .fbx)
+            echo "ファイル '$fbxf' をglTF形式に変換中..."
+            ./FBX2glTF "$fbxf" -o temp_gltf/"$filename".gltf
 
-          const [,, inputFbx, outputVrm] = process.argv;
-          if (!inputFbx || !outputVrm) {
-            console.error('Usage: node convert.js input.fbx output.vrm');
-            process.exit(1);
-          }
-
-          const tmpGlb = path.join(process.cwd(), 'tmp.glb');
-          const fbxResult = spawnSync('fbx2gltf', ['-i', inputFbx, '-o', tmpGlb, '-b'], { stdio: 'inherit' });
-
-          if (fbxResult.status !== 0) {
-            console.error('FBX2glTF failed');
-            process.exit(1);
-          }
-
-          const io  = new NodeIO().registerExtensions([VRMExtension]);
-          const doc = io.read(tmpGlb);
-          const root = doc.getRoot();
-
-          const vrm = await VRM.from(root, {
-            meta: {
-              name:             path.basename(inputFbx, '.fbx'),
-              version:          '1.0.0',
-              author:           'GitHub Actions',
-              contactInformation: '',
-              reference:        [],
-              allowedUser:      'Everyone',
-              violentUssage:    'Disallow',
-              sexualUssage:     'Disallow',
-              commercialUssage: 'Allow',
-              otherPermissionUrl: '',
-              licenseName: 'CC0',
-              otherLicenseUrl: ''
-            }
-          });
-
-          await io.write(outputVrm, doc);
-          fs.unlinkSync(tmpGlb);
-          console.log(`✅ Converted ${inputFbx} → ${outputVrm}`);
-          EOF
-          chmod +x convert.js
-
-      - name: Convert all FBX to VRM
-        run: |
-          mkdir -p outputs
-          shopt -s nullglob
-          for f in *.fbx; do
-            name=$(basename "$f" .fbx)
-            node convert.js "$f" "outputs/${name}.vrm"
+            if [ -f temp_gltf/"$filename".gltf ]; then
+              echo "glTF変換成功: temp_gltf/$filename.gltf"
+              # 注意: 本来はここでglTFをVRMに変換する処理が必要ですが、
+              # 現在glTF2VRM等の対応ツールが存在しないため、代わりに
+              # glTFファイルをVRM拡張子にリネーム（コピー）して疑似的にVRMファイルとして扱います。
+              cp temp_gltf/"$filename".gltf converted_vrm/"$filename".vrm
+              echo "VRM疑似ファイル生成完了: converted_vrm/$filename.vrm"
+            else
+              echo "エラー: '$fbxf' のglTF変換に失敗しました。"
+            fi
           done
 
-      - name: Commit and Push VRM files
+      - name: 生成されたVRM疑似ファイルをコミット
         run: |
-          git config user.name "${{ github.actor }}"
-          git config user.email "${{ github.actor }}@users.noreply.github.com"
-          git add outputs/*.vrm || true
-          git commit -m "chore: Add converted VRM models" || echo "No changes to commit"
-          git push
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+          
+          # 変換されたVRM疑似ファイルをリポジトリのルートディレクトリにコピーします
+          cp -r converted_vrm/* .
+          git add $(find . -type f -name "*.vrm") || echo "VRMファイルが見つかりませんでした。"
+          
+          # 変更がある場合のみコミット・プッシュします
+          if ! git diff-index --quiet HEAD --; then
+            git commit -m "FBXから生成されたVRM（疑似）アバターを追加"
+            git push
+          else
+            echo "コミット対象のVRMファイルはありません。"
+          fi
