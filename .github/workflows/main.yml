@@ -1,7 +1,7 @@
-name: FBX → VRM Conversion & Commit
+name: FBX to VRM Converter & Committer
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:  # 手動実行トリガー
 
 jobs:
   convert-and-commit:
@@ -20,9 +20,8 @@ jobs:
           sudo apt-get install -y wget unzip libstdc++6
           wget https://github.com/godotengine/FBX2glTF/releases/latest/download/FBX2glTF-linux-x86_64.zip -O fbx2gltf.zip
           unzip fbx2gltf.zip -d fbx2gltf
-          sudo mv fbx2gltf/FBX2glTF-linux-x86_64/FBX2glTF /usr/local/bin/fbx2gltf
-          chmod +x /usr/local/bin/fbx2gltf
-        # 正しいバイナリ名とパス構成に修正 :contentReference[oaicite:0]{index=0}
+          sudo mv fbx2gltf/FBX2glTF-linux-x86_64/FBX2glTF-linux-x86_64 /usr/local/bin/fbx2gltf
+          sudo chmod +x /usr/local/bin/fbx2gltf
 
       - name: Setup Node.js
         uses: actions/setup-node@v3
@@ -34,9 +33,9 @@ jobs:
           npm init -y
           npm install @gltf-transform/core @gltf-transform/extensions @gltf-transform/functions @pixiv/three-vrm
 
-      - name: Write conversion script
+      - name: Write convert.js
         run: |
-          cat > convert.js << 'EOF'
+          cat << 'EOF' > convert.js
           #!/usr/bin/env node
           import { spawnSync }    from 'child_process';
           import { NodeIO }       from '@gltf-transform/core';
@@ -51,32 +50,45 @@ jobs:
             process.exit(1);
           }
 
-          const tmpGltf = path.join(process.cwd(), 'tmp.model.gltf');
-          spawnSync('fbx2gltf', ['-i', inputFbx, '-o', tmpGltf], { stdio: 'inherit' });
+          const tmpGlb = path.join(process.cwd(), 'tmp.glb');
+          const fbxResult = spawnSync('fbx2gltf', ['-i', inputFbx, '-o', tmpGlb, '-b'], { stdio: 'inherit' });
+
+          if (fbxResult.status !== 0) {
+            console.error('FBX2glTF failed');
+            process.exit(1);
+          }
 
           const io  = new NodeIO().registerExtensions([VRMExtension]);
-          const doc = io.read(tmpGltf);
-          VRM.from(doc.getRoot(), {
+          const doc = io.read(tmpGlb);
+          const root = doc.getRoot();
+
+          const vrm = await VRM.from(root, {
             meta: {
               name:             path.basename(inputFbx, '.fbx'),
               version:          '1.0.0',
-              author:           'Automated CI',
+              author:           'GitHub Actions',
+              contactInformation: '',
+              reference:        [],
               allowedUser:      'Everyone',
               violentUssage:    'Disallow',
               sexualUssage:     'Disallow',
-              commercialUssage: 'Allow'
+              commercialUssage: 'Allow',
+              otherPermissionUrl: '',
+              licenseName: 'CC0',
+              otherLicenseUrl: ''
             }
-          }).then(vrm => {
-            vrm.write(outputVrm);
-            fs.unlinkSync(tmpGltf);
-            console.log('Exported:', outputVrm);
           });
+
+          await io.write(outputVrm, doc);
+          fs.unlinkSync(tmpGlb);
+          console.log(`✅ Converted ${inputFbx} → ${outputVrm}`);
           EOF
           chmod +x convert.js
 
       - name: Convert all FBX to VRM
         run: |
           mkdir -p outputs
+          shopt -s nullglob
           for f in *.fbx; do
             name=$(basename "$f" .fbx)
             node convert.js "$f" "outputs/${name}.vrm"
@@ -86,6 +98,6 @@ jobs:
         run: |
           git config user.name "${{ github.actor }}"
           git config user.email "${{ github.actor }}@users.noreply.github.com"
-          git add outputs/*.vrm
-          git commit -m "chore: add converted VRM models" || echo "Nothing to commit"
+          git add outputs/*.vrm || true
+          git commit -m "chore: Add converted VRM models" || echo "No changes to commit"
           git push
