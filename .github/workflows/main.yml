@@ -1,113 +1,104 @@
-name: Convert FBX → VRM1.x with Metadata
+name: FBX → VRM Conversion & Commit
 
 on:
   workflow_dispatch:
-    inputs:
-      title:
-        description: 'VRM のタイトル'
-        required: true
-        default: 'MyAvatar'
-      author:
-        description: 'VRM の作者'
-        required: true
-        default: 'GitHub Actions Bot'
-
-permissions:
-  contents: write
 
 jobs:
-  convert:
+  convert-and-commit:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-      with:
-        persist-credentials: true
+      # 1. リポジトリをチェックアウト（コミット用の資格情報を保持）
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0          # フル履歴を取得して push に備える :contentReference[oaicite:0]{index=0}
+          persist-credentials: true
 
-    - name: Setup Node.js
-      uses: actions/setup-node@v3
-      with:
-        node-version: '16'
+      # 2. FBX→glTF 変換ツール（FBX2glTF）をインストール
+      - name: Install FBX2glTF
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget unzip libstdc++6
+          wget https://github.com/facebookincubator/FBX2glTF/releases/download/v1.1.1/FBX2glTF-linux.zip -O fbx2gltf.zip
+          unzip fbx2gltf.zip -d fbx2gltf
+          sudo mv fbx2gltf/FBX2GLTF /usr/local/bin/fbx2gltf
+        # FBX2glTF は Autodesk FBX → glTF 変換の公式 CLI ツール :contentReference[oaicite:1]{index=1}
 
-    - name: Download FBX2glTF binary
-      run: |
-        # v0.9.7 の Linux x64 バイナリを GitHub リリースから取得
-        wget -qO FBX2glTF \
-          https://github.com/facebookincubator/FBX2GLTF/releases/download/v0.9.7/FBX2glTF-linux-x64
-        chmod +x FBX2glTF
-      # リリース・バイナリの入手方法はコミュニティでも推奨されています :contentReference[oaicite:0]{index=0}
+      # 3. Node.js 環境を準備
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
 
-    - name: Install glTF-Transform tools
-      run: |
-        npm install @gltf-transform/cli @gltf-transform/core @gltf-transform/extensions
+      # 4. 必要な npm ライブラリをインストール
+      - name: Install npm dependencies
+        run: |
+          npm init -y
+          npm install @gltf-transform/core @gltf-transform/extensions @gltf-transform/functions @pixiv/three-vrm
+        # @pixiv/three-vrm で VRM1.0 spec の拡張を扱う 
 
-    - name: Convert FBX to GLB
-      run: |
-        mkdir -p temp_glb
-        for f in FBX/**/*.fbx; do
-          base=$(basename "$f" .fbx)
-          echo "Converting $f → temp_glb/$base.glb"
-          ./FBX2glTF --binary --input "$f" --output "temp_glb/$base"
-        done
-      # GitHub リリースのバイナリを直接実行することで、npm 経由で見つからない問題を解消します :contentReference[oaicite:1]{index=1}
+      # 5. 変換スクリプトを生成
+      - name: Write conversion script
+        run: |
+          cat > convert.js << 'EOF'
+          #!/usr/bin/env node
+          import { spawnSync }    from 'child_process';
+          import { NodeIO }       from '@gltf-transform/core';
+          import { VRMExtension } from '@gltf-transform/extensions';
+          import { VRM }          from '@pixiv/three-vrm';
+          import fs               from 'fs';
+          import path             from 'path';
 
-    - name: Create glb-to-vrm1 script
-      run: |
-        cat << 'EOF' > convert_glb_to_vrm1.js
-        #!/usr/bin/env node
-        import fs from 'fs';
-        import path from 'path';
-        import { NodeIO } from '@gltf-transform/core';
-        import { VRMC_vrm } from '@gltf-transform/extensions';
-
-        async function main() {
-          const title  = process.env.INPUT_TITLE  || 'Untitled';
-          const author = process.env.INPUT_AUTHOR || 'Unknown';
-          const io = new NodeIO().registerExtensions([VRMC_vrm]);
-          const outDir = path.resolve('ExportedVRM1');
-          fs.mkdirSync(outDir, { recursive: true });
-
-          const files = fs.readdirSync('temp_glb').filter(f => f.endsWith('.glb'));
-          for (const file of files) {
-            const inPath = path.join('temp_glb', file);
-            const doc    = io.read(inPath);
-            const vrmExt = doc.createExtension(VRMC_vrm);
-            const meta   = vrmExt.createMetadata();
-            meta.setTitle(title);
-            meta.setAuthor(author);
-            const outPath = path.join(outDir, file.replace(/\.glb$/, '.vrm'));
-            io.write(outPath, doc);
-            console.log(`Exported VRM1.x → ${outPath}`);
+          const [,, inputFbx, outputVrm] = process.argv;
+          if (!inputFbx || !outputVrm) {
+            console.error('Usage: node convert.js input.fbx output.vrm');
+            process.exit(1);
           }
-        }
 
-        main().catch(err => {
-          console.error(err);
-          process.exit(1);
-        });
-        EOF
-        chmod +x convert_glb_to_vrm1.js
+          // 1) FBX → glTF
+          const tmpGltf = path.join(process.cwd(), 'tmp.model.gltf');
+          spawnSync('fbx2gltf', ['-i', inputFbx, '-o', tmpGltf], { stdio: 'inherit' });
 
-    - name: Run glb-to-vrm1 conversion
-      env:
-        INPUT_TITLE:  ${{ github.event.inputs.title }}
-        INPUT_AUTHOR: ${{ github.event.inputs.author }}
-      run: |
-        mkdir -p ExportedVRM1
-        # 型変換だけ行いディレクトリ構成を作る
-        npx gltf-transform copy temp_glb -o ExportedVRM1 --extension VRMC_vrm
-        # 本スクリプトでメタデータ埋め込み＆書き出し
-        node convert_glb_to_vrm1.js
+          // 2) glTF を読み込み、VRM 拡張を登録
+          const io  = new NodeIO().registerExtensions([VRMExtension]);
+          const doc = io.read(tmpGltf);
 
-    - name: Commit & Push
-      run: |
-        git config user.name "github-actions[bot]"
-        git config user.email "github-actions[bot]@users.noreply.github.com"
-        git add ExportedVRM1/
-        if git diff --cached --quiet; then
-          echo "✅ No new VRM1.x files"
-        else
-          git commit -m "Auto-convert FBX → VRM1.x (Title: '${{ github.event.inputs.title }}', Author: '${{ github.event.inputs.author }}')"
+          // 3) VRMメタ情報を注入
+          VRM.from(doc.getRoot(), {
+            meta: {
+              name:             path.basename(inputFbx, '.fbx'),
+              version:          '1.0.0',
+              author:           'Automated CI',
+              allowedUser:      'Everyone',
+              violentUssage:    'Disallow',
+              sexualUssage:     'Disallow',
+              commercialUssage: 'Allow'
+            }
+          }).then(vrm => {
+            // 4) VRMを書き出し
+            vrm.write(outputVrm);
+            fs.unlinkSync(tmpGltf);
+            console.log('Exported:', outputVrm);
+          });
+          EOF
+          chmod +x convert.js
+
+      # 6. リポジトリ内の .fbx を全て VRM に変換
+      - name: Convert all FBX to VRM
+        run: |
+          mkdir -p outputs
+          for f in *.fbx; do
+            name=$(basename "$f" .fbx)
+            node convert.js "$f" "outputs/${name}.vrm"
+          done
+
+      # 7. 生成された VRM をコミット＆プッシュ
+      - name: Commit and Push VRM files
+        run: |
+          git config user.name "${{ github.actor }}"
+          git config user.email "${{ github.actor }}@users.noreply.github.com"
+          git add outputs/*.vrm
+          git commit -m "chore: add converted VRM models"
           git push
-        fi
+        # ワークフロー中でのファイル変更をリポジトリに反映 :contentReference[oaicite:3]{index=3}
