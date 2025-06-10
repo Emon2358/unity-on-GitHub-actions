@@ -14,15 +14,15 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
-      - name: Install FBX2glTF (Godot fork)
+      - name: Install FBX2glTF from Godot fork
         run: |
           sudo apt-get update
           sudo apt-get install -y wget unzip libstdc++6
-          # Godot Engine フォークの Linux バイナリを取得
           wget https://github.com/godotengine/FBX2glTF/releases/latest/download/FBX2glTF-linux-x86_64.zip -O fbx2gltf.zip
           unzip fbx2gltf.zip -d fbx2gltf
-          sudo mv fbx2gltf/FBX2glTF /usr/local/bin/fbx2gltf
-        # Linux x86_64 用バイナリを含む公式リリース :contentReference[oaicite:1]{index=1}
+          sudo mv fbx2gltf/FBX2glTF-linux-x86_64/FBX2glTF /usr/local/bin/fbx2gltf
+          chmod +x /usr/local/bin/fbx2gltf
+        # 正しいバイナリ名とパス構成に修正 :contentReference[oaicite:0]{index=0}
 
       - name: Setup Node.js
         uses: actions/setup-node@v3
