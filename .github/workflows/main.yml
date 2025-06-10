@@ -8,37 +8,32 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. リポジトリをチェックアウト（コミット用の資格情報を保持）
       - name: Checkout repository
         uses: actions/checkout@v3
         with:
-          fetch-depth: 0          # フル履歴を取得して push に備える :contentReference[oaicite:0]{index=0}
+          fetch-depth: 0
           persist-credentials: true
 
-      # 2. FBX→glTF 変換ツール（FBX2glTF）をインストール
-      - name: Install FBX2glTF
+      - name: Install FBX2glTF (Godot fork)
         run: |
           sudo apt-get update
           sudo apt-get install -y wget unzip libstdc++6
-          wget https://github.com/facebookincubator/FBX2glTF/releases/download/v1.1.1/FBX2glTF-linux.zip -O fbx2gltf.zip
+          # Godot Engine フォークの Linux バイナリを取得
+          wget https://github.com/godotengine/FBX2glTF/releases/latest/download/FBX2glTF-linux-x86_64.zip -O fbx2gltf.zip
           unzip fbx2gltf.zip -d fbx2gltf
-          sudo mv fbx2gltf/FBX2GLTF /usr/local/bin/fbx2gltf
-        # FBX2glTF は Autodesk FBX → glTF 変換の公式 CLI ツール :contentReference[oaicite:1]{index=1}
+          sudo mv fbx2gltf/FBX2glTF /usr/local/bin/fbx2gltf
+        # Linux x86_64 用バイナリを含む公式リリース :contentReference[oaicite:1]{index=1}
 
-      # 3. Node.js 環境を準備
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
           node-version: '18'
 
-      # 4. 必要な npm ライブラリをインストール
       - name: Install npm dependencies
         run: |
           npm init -y
           npm install @gltf-transform/core @gltf-transform/extensions @gltf-transform/functions @pixiv/three-vrm
-        # @pixiv/three-vrm で VRM1.0 spec の拡張を扱う 
 
-      # 5. 変換スクリプトを生成
       - name: Write conversion script
         run: |
           cat > convert.js << 'EOF'
@@ -56,15 +51,11 @@ jobs:
             process.exit(1);
           }
 
-          // 1) FBX → glTF
           const tmpGltf = path.join(process.cwd(), 'tmp.model.gltf');
           spawnSync('fbx2gltf', ['-i', inputFbx, '-o', tmpGltf], { stdio: 'inherit' });
 
-          // 2) glTF を読み込み、VRM 拡張を登録
           const io  = new NodeIO().registerExtensions([VRMExtension]);
           const doc = io.read(tmpGltf);
-
-          // 3) VRMメタ情報を注入
           VRM.from(doc.getRoot(), {
             meta: {
               name:             path.basename(inputFbx, '.fbx'),
@@ -76,7 +67,6 @@ jobs:
               commercialUssage: 'Allow'
             }
           }).then(vrm => {
-            // 4) VRMを書き出し
             vrm.write(outputVrm);
             fs.unlinkSync(tmpGltf);
             console.log('Exported:', outputVrm);
@@ -84,7 +74,6 @@ jobs:
           EOF
           chmod +x convert.js
 
-      # 6. リポジトリ内の .fbx を全て VRM に変換
       - name: Convert all FBX to VRM
         run: |
           mkdir -p outputs
@@ -93,12 +82,10 @@ jobs:
             node convert.js "$f" "outputs/${name}.vrm"
           done
 
-      # 7. 生成された VRM をコミット＆プッシュ
       - name: Commit and Push VRM files
         run: |
           git config user.name "${{ github.actor }}"
           git config user.email "${{ github.actor }}@users.noreply.github.com"
           git add outputs/*.vrm
-          git commit -m "chore: add converted VRM models"
+          git commit -m "chore: add converted VRM models" || echo "Nothing to commit"
           git push
-        # ワークフロー中でのファイル変更をリポジトリに反映 :contentReference[oaicite:3]{index=3}
